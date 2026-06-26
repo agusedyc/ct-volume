@@ -126,6 +126,38 @@ Hanya menyisakan 7 backup terakhir per volume:
 ct-volume backup --retain 7
 ```
 
+### Backup + bundle project (siap kirim antar server)
+
+Backup volume, lalu zip seluruh direktori project (compose file + `.env` + config + backups) jadi satu archive:
+
+```bash
+ct-volume backup --bundle
+```
+
+Output:
+```
+ℹ Creating project bundle: my-web-app-20260626-221138.tar.gz
+✓ Bundle created: /path/to/my-web-app-20260626-221138.tar.gz
+```
+
+Simpan bundle ke direktori tertentu:
+
+```bash
+ct-volume backup --bundle -o /mnt/backups/bundles
+```
+
+Nama file otomatis: `{nama-dir-project}-{YYYYMMDD}-{HHMMSS}.tar.gz`
+
+### Restore dari bundle
+
+Ekstrak bundle + restore volume langsung dalam satu perintah:
+
+```bash
+ct-volume restore --bundle my-web-app-20260626-221138.tar.gz
+```
+
+Cocok untuk migrasi antar server — cukup kirim 1 file `.tar.gz`, lalu restore.
+
 ### Restore semua volume
 
 ```bash
@@ -195,7 +227,19 @@ ct-volume backup
   ├── Untuk setiap volume:
   │     └── docker run alpine tar czf /backup/TIMESTAMP-volume.tar.gz
   ├── Jika sebelumnya running → docker compose up -d
-  └── Jika --retain → hapus backup terlama
+  ├── Jika --retain → hapus backup terlama
+  └── Jika --bundle → zip project dir → {dir}-{TIMESTAMP}.tar.gz
+```
+
+### Backup --bundle
+```
+ct-volume backup --bundle
+  │
+  ├── [proses backup normal]
+  ├── Tentukan project root (parent dari compose file)
+  ├── cd ke parent directory
+  └── tar czf {nama-project}-{TIMESTAMP}.tar.gz {nama-project}/
+      └── Hasil: 1 file siap kirim antar server
 ```
 
 ### Restore
@@ -209,6 +253,16 @@ ct-volume restore
   │     └── docker run alpine tar xzf /backup/archive.tar.gz
   ├── docker compose up -d
   └── Selesai
+```
+
+### Restore --bundle
+```
+ct-volume restore --bundle archive.tar.gz
+  │
+  ├── Ekstrak archive → project dir
+  ├── Deteksi compose file di dalam project dir
+  ├── Set backup_dir ke ./backups/ di dalam project dir
+  └── [proses restore normal]
 ```
 
 ## Contoh Lengkap
@@ -233,6 +287,70 @@ ct-volume restore \
   -d /backups/postgres \
   --force
 ```
+
+## Migrasi Antar Server via Tailscale
+
+Workflow lengkap pindah project beserta volume ke server lain menggunakan Tailscale + `--bundle`.
+
+### Prasyarat
+
+- Kedua server terhubung dalam satu jaringan Tailscale
+- `ct-volume` sudah terinstall di kedua server
+
+### Step-by-step
+
+**Server A (sumber):**
+
+```bash
+# 1. Masuk ke direktori project
+cd /var/www/my-web-app
+
+# 2. Backup volume + bundle seluruh project
+ct-volume backup --bundle -o /tmp
+# Output: /tmp/my-web-app-20260626-221138.tar.gz
+```
+
+**Transfer via Tailscale:**
+
+```bash
+# Dari Server A → kirim ke Server B (via rsync over Tailscale)
+rsync -avz --progress /tmp/my-web-app-*.tar.gz user@server-b:/tmp/
+
+# Atau dari Server B → tarik dari Server A
+ssh user@server-a-tailscale-ip
+rsync -avz --progress user@server-a:/tmp/my-web-app-*.tar.gz /tmp/
+```
+
+**Server B (tujuan):**
+
+```bash
+# 3. Restore langsung dari bundle
+cd /tmp
+ct-volume restore --bundle my-web-app-20260626-221138.tar.gz --force
+```
+
+Selesai. Volume + compose file + config sudah ter-restore di Server B.
+
+### Automation dengan cron + rsync
+
+**Server A — backup otomatis tiap hari:**
+
+```bash
+# /etc/cron.daily/backup-webapp
+#!/bin/bash
+cd /var/www/my-web-app
+/usr/local/bin/ct-volume backup --bundle -o /tmp/backups --retain 7
+```
+
+**Server B — pull backup via Tailscale:**
+
+```bash
+# /etc/cron.daily/pull-backup
+#!/bin/bash
+rsync -avz --remove-source-files user@server-a-tailscale-ip:/tmp/backups/ /tmp/backups/
+```
+
+> Koneksi Tailscale sudah dienkripsi end-to-end, tidak perlu konfigurasi VPN atau firewall tambahan.
 
 ## Struktur Direktori Backup
 
