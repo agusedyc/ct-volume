@@ -8,6 +8,26 @@ ct-volume restore
 ct-volume list
 ```
 
+## Daftar Isi
+
+- [Fitur](#fitur)
+- [Dependencies](#dependencies)
+- [Instalasi](#instalasi)
+- [Usage](#usage)
+  - [Backup](#backup)
+  - [Restore](#restore)
+  - [List](#list)
+- [Alur Kerja](#alur-kerja)
+  - [Backup](#backup-1)
+  - [Backup --bundle](#backup---bundle)
+  - [Restore](#restore-1)
+  - [Restore --bundle](#restore---bundle)
+- [Contoh Lengkap](#contoh-lengkap)
+- [Migrasi Antar Server via Tailscale](#migrasi-antar-server-via-tailscale)
+- [Struktur Direktori Backup](#struktur-direktori-backup)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
 ## Fitur
 
 - **Backup** — backup semua (atau spesifik) named volume dari compose file
@@ -82,7 +102,9 @@ ct-volume --version
 
 ## Usage
 
-### Backup semua volume
+### Backup
+
+#### Backup semua volume
 
 ```bash
 cd /project/dengan/compose/file
@@ -104,13 +126,15 @@ Output:
   Location: /home/user/project/backups
 ```
 
-### Backup volume spesifik
+#### Backup volume spesifik
 
 ```bash
 ct-volume backup -v postgres_data
 ```
 
-### Backup dengan custom compose file dan backup directory
+#### Backup dengan custom backup directory
+
+Direktori output backup dapat ditentukan dengan flag `-d` atau `--backup-dir`. Default: `./backups`.
 
 ```bash
 ct-volume backup \
@@ -118,7 +142,7 @@ ct-volume backup \
   -d /mnt/backups/docker
 ```
 
-### Backup dengan retention policy
+#### Backup dengan retention policy
 
 Hanya menyisakan 7 backup terakhir per volume:
 
@@ -126,7 +150,7 @@ Hanya menyisakan 7 backup terakhir per volume:
 ct-volume backup --retain 7
 ```
 
-### Backup + bundle project (siap kirim antar server)
+#### Backup + bundle project (siap kirim antar server)
 
 Backup volume, lalu zip seluruh direktori project (compose file + `.env` + config + backups) jadi satu archive:
 
@@ -140,7 +164,7 @@ Output:
 ✓ Bundle created: /path/to/my-web-app-20260626-221138.tar.gz
 ```
 
-Simpan bundle ke direktori tertentu:
+Bundle output dapat diarahkan ke direktori tertentu dengan flag `-o` atau `--output`. Default: parent directory dari project.
 
 ```bash
 ct-volume backup --bundle -o /mnt/backups/bundles
@@ -148,17 +172,9 @@ ct-volume backup --bundle -o /mnt/backups/bundles
 
 Nama file otomatis: `{nama-dir-project}-{YYYYMMDD}-{HHMMSS}.tar.gz`
 
-### Restore dari bundle
+### Restore
 
-Ekstrak bundle + restore volume langsung dalam satu perintah:
-
-```bash
-ct-volume restore --bundle my-web-app-20260626-221138.tar.gz
-```
-
-Cocok untuk migrasi antar server — cukup kirim 1 file `.tar.gz`, lalu restore.
-
-### Restore semua volume
+#### Restore semua volume
 
 ```bash
 ct-volume restore
@@ -174,25 +190,37 @@ Akan muncul konfirmasi:
 This will OVERWRITE existing volume data. Continue? [y/N]
 ```
 
-### Restore tanpa konfirmasi
+#### Restore tanpa konfirmasi
 
 ```bash
 ct-volume restore --force
 ```
 
-### Restore volume spesifik
+#### Restore volume spesifik
 
 ```bash
 ct-volume restore -v postgres_data
 ```
 
-### Restore dari direktori backup tertentu
+#### Restore dari direktori backup tertentu
 
 ```bash
 ct-volume restore -d /mnt/backups/docker
 ```
 
-### List named volumes
+#### Restore dari bundle
+
+Ekstrak bundle + restore volume langsung dalam satu perintah:
+
+```bash
+ct-volume restore --bundle my-web-app-20260626-221138.tar.gz
+```
+
+Cocok untuk migrasi antar server — cukup kirim 1 file `.tar.gz`, lalu restore.
+
+### List
+
+#### List named volumes
 
 ```bash
 ct-volume list
@@ -208,7 +236,7 @@ Named Volumes in: docker-compose.yml
   redis_data
 ```
 
-### List volume spesifik
+#### List volume spesifik
 
 ```bash
 ct-volume list -v postgres_data
