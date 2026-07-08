@@ -582,7 +582,8 @@ main() {
     compose_file=$(detect_compose_file "$compose_file")
     info "Using compose file: $(realpath "$compose_file")"
   fi
-  info "Backup directory: $(realpath "$(mkdir -p "$backup_dir" && cd "$backup_dir" && pwd)")"
+  backup_dir=$(mkdir -p "$backup_dir" && cd "$backup_dir" && pwd)
+  info "Backup directory: ${backup_dir}"
 
   case "$command" in
     backup)
