@@ -242,10 +242,12 @@ cmd_backup() {
 
     info "Backing up volume: ${vol} → ${archive_name}"
 
+    docker volume inspect "$vol" &>/dev/null || docker volume create "$vol" &>/dev/null || true
+
     if docker run --rm \
       -v "${vol}:/source:ro" \
       -v "${backup_dir}:/backup" \
-      alpine tar czf "/backup/${archive_name}" -C /source . 2>/dev/null; then
+      alpine tar czf "/backup/${archive_name}" -C /source .; then
       local size
       size=$(stat --printf="%s" "$archive_path" 2>/dev/null || echo 0)
       total_size=$((total_size + size))
