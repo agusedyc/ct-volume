@@ -6,6 +6,8 @@ Docker Volume Backup/Restore Tool — backup dan restore volume Docker berdasark
 ct-volume backup
 ct-volume restore
 ct-volume list
+ct-volume dir-backup /path/to/project
+ct-volume dir-restore backup.tar.gz
 ```
 
 ## Daftar Isi
@@ -23,6 +25,8 @@ ct-volume list
   - [Restore](#restore-1)
   - [Restore --bundle](#restore---bundle)
 - [Contoh Lengkap](#contoh-lengkap)
+- [Dir Backup](#dir-backup-2)
+- [Dir Restore](#dir-restore-2)
 - [Migrasi Antar Server via Tailscale](#migrasi-antar-server-via-tailscale)
 - [Struktur Direktori Backup](#struktur-direktori-backup)
 - [Troubleshooting](#troubleshooting)
@@ -39,6 +43,8 @@ ct-volume list
 - **Timestamped archive** — format nama file `YYYYMMDD-HHMMSS-volume-name.tar.gz`
 - **Minimal dependencies** — hanya butuh `bash`, `docker`, `docker compose`, `jq`
 - **Multi compose support** — bisa pakai compose file dari direktori mana pun via `-f`
+- **Dir Backup** — backup satu direktori project + volume compose jadi satu archive
+- **Dir Restore** — restore archive ke current directory + restore semua volume
 
 ## Dependencies
 
@@ -218,6 +224,67 @@ ct-volume restore --bundle my-web-app-20260626-221138.tar.gz
 
 Cocok untuk migrasi antar server — cukup kirim 1 file `.tar.gz`, lalu restore.
 
+### Dir Backup
+
+Backup satu direktori project + seluruh volume docker-compose menjadi satu archive.
+
+```bash
+ct-volume dir-backup /path/to/project
+```
+
+Alur:
+1. Validasi direktori target
+2. Cari `docker-compose.yml` di dalamnya
+3. Cek container — jika masih berjalan, backup ditolak (harus `docker compose down` manual)
+4. Backup semua named volume ke folder `volumes/` (sementara)
+5. Archive seluruh file project + folder `volumes/` → `{nama-dir}-backup-{timestamp}.tar.gz`
+6. Hasil disimpan di current working directory
+
+Output:
+```
+ℹ Using compose file: /path/to/project/docker-compose.yml
+ℹ Copying project files...
+ℹ Backing up volume: postgres_data
+✓ Volume backup: postgres_data.tar.gz
+ℹ Creating archive: my-project-backup-20250709-120000.tar.gz
+✓ Backup created: .../my-project-backup-20250709-120000.tar.gz (1.2M)
+```
+
+Archive structure:
+```
+my-project-backup-20250709-120000.tar.gz
+└── my-project/
+    ├── docker-compose.yml
+    ├── ... (semua file project)
+    └── volumes/
+        ├── postgres_data.tar.gz
+        └── redis_data.tar.gz
+```
+
+### Dir Restore
+
+Restore archive (project + volume) ke current working directory.
+
+```bash
+cd /target/location
+ct-volume dir-restore ../my-project-backup-20250709-120000.tar.gz
+```
+
+Alur:
+1. Ekstrak archive ke current directory
+2. Cari folder `volumes/` di dalam hasil extract
+3. Restore setiap volume docker dari file `.tar.gz` di `volumes/`
+4. Selesai — user jalankan `docker compose up -d` manual
+
+Output:
+```
+ℹ Extracting archive: my-project-backup-20250709-120000.tar.gz
+ℹ Restoring volume: postgres_data
+✓ Volume restored: postgres_data
+✓ Restore finished. 2 volume(s) restored to /target/location/my-project
+ℹ Run 'docker compose up -d' manually inside .../my-project when ready.
+```
+
 ### List
 
 #### List named volumes
@@ -291,6 +358,32 @@ ct-volume restore --bundle archive.tar.gz
   ├── Deteksi compose file di dalam project dir
   ├── Set backup_dir ke ./backups/ di dalam project dir
   └── [proses restore normal]
+```
+
+### Dir Backup
+```
+ct-volume dir-backup /path/to/project
+  │
+  ├── Validasi direktori target
+  ├── Cari docker-compose.yml di dalamnya
+  ├── Cek container status
+  │     ├── Running → warning, minta user stop manual
+  │     └── Stopped → lanjut
+  ├── Copy semua file project ke staging area
+  ├── Backup named volumes ke staging/volumes/
+  ├── Archive staging + compress → {nama}-backup-{timestamp}.tar.gz
+  └── Simpan di current directory
+```
+
+### Dir Restore
+```
+ct-volume dir-restore archive.tar.gz
+  │
+  ├── Ekstrak archive ke current directory
+  ├── Cari folder volumes/ di hasil extract
+  ├── Untuk setiap .tar.gz di volumes/:
+  │     └── docker run alpine tar xzf → restore ke docker volume
+  └── Selesai (user compose up -d manual)
 ```
 
 ## Contoh Lengkap

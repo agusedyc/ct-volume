@@ -21,9 +21,11 @@ usage() {
 Usage: ct-volume <command> [options]
 
 Commands:
-  backup   Backup named volumes from docker compose
-  restore  Restore named volumes from backup archive
-  list     List named volumes in the compose file
+  backup       Backup named volumes from docker compose
+  restore      Restore named volumes from backup archive
+  list         List named volumes in the compose file
+  dir-backup   Backup project directory + docker volumes into one archive
+  dir-restore  Restore project directory + docker volumes from archive
 
 Global options:
   -f, --file <file>       Compose file path (default: auto-detect)
@@ -50,6 +52,8 @@ Examples:
   ct-volume restore -v postgres_data --force
   ct-volume restore --bundle project-web-20250626.tar.gz
   ct-volume list
+  ct-volume dir-backup /path/to/project
+  ct-volume dir-restore project-backup-20250709-120000.tar.gz
 EOF
   exit 0
 }
@@ -77,7 +81,7 @@ get_named_volumes() {
   local filter_volume="${2:-}"
 
   local config
-  config=$("$_COMPOSE_CMD" -f "$compose_file" config --format json 2>/dev/null || true)
+  config=$($_COMPOSE_CMD -f "$compose_file" config --format json 2>/dev/null || true)
 
   local volumes=""
   if [[ -n "$config" ]]; then
@@ -98,7 +102,7 @@ get_named_volumes() {
     fi
   else
     # V1: --format json not supported, use --volumes flag
-    volumes=$("$_COMPOSE_CMD" -f "$compose_file" config --volumes 2>/dev/null || true)
+    volumes=$($_COMPOSE_CMD -f "$compose_file" config --volumes 2>/dev/null || true)
 
     if [[ -n "$filter_volume" ]]; then
       volumes=$(echo "$volumes" | grep -x "$filter_volume" || true)
@@ -121,7 +125,7 @@ get_named_volumes() {
 compose_is_running() {
   local compose_file="$1"
   local output
-  output=$("$_COMPOSE_CMD" -f "$compose_file" ps -q 2>/dev/null)
+  output=$($_COMPOSE_CMD -f "$compose_file" ps -q 2>/dev/null)
   [[ -n "$output" ]]
 }
 
@@ -440,6 +444,149 @@ cmd_restore() {
   ok "Restore finished."
 }
 
+# ─── Dir Backup (simple mode) ─────────────────────────────────
+cmd_dir_backup() {
+  local target_dir="$1"
+
+  if [[ -z "$target_dir" ]]; then
+    err "Usage: ct-volume dir-backup <target-directory>"
+    exit 1
+  fi
+
+  if [[ ! -d "$target_dir" ]]; then
+    err "Target directory not found: $target_dir"
+    exit 1
+  fi
+
+  target_dir=$(realpath "$target_dir")
+  local dir_name
+  dir_name=$(basename "$target_dir")
+
+  # Find compose file inside target directory
+  local compose_file=""
+  for candidate in docker-compose.yml compose.yaml docker-compose.yaml compose.yml; do
+    if [[ -f "${target_dir}/${candidate}" ]]; then
+      compose_file="${target_dir}/${candidate}"
+      break
+    fi
+  done
+
+  if [[ -z "$compose_file" ]]; then
+    err "No docker-compose.yml found in: $target_dir"
+    exit 1
+  fi
+
+  info "Using compose file: $compose_file"
+
+  # Check container status — user must stop manually
+  if compose_is_running "$compose_file"; then
+    warn "Container is still running in: $target_dir"
+    warn "Please stop it first, then run backup again."
+    info "Inside $target_dir, run: ${_COMPOSE_CMD} down"
+    exit 1
+  fi
+
+  local volumes
+  volumes=$(get_named_volumes "$compose_file" "")
+
+  local timestamp
+  timestamp=$(date +%Y%m%d-%H%M%S)
+
+  # Staging area
+  local staging
+  staging=$(mktemp -d)
+  local staging_dir="${staging}/${dir_name}"
+  mkdir -p "$staging_dir"
+
+  info "Copying project files..."
+  cp -a "$target_dir/." "$staging_dir/"
+
+  # Backup volumes
+  local vol_dir="${staging_dir}/volumes"
+  mkdir -p "$vol_dir"
+
+  while read -r vol; do
+    local vol_archive="${vol}.tar.gz"
+    info "Backing up volume: ${vol}"
+    docker volume inspect "$vol" &>/dev/null || docker volume create "$vol" &>/dev/null || true
+    if docker run --rm \
+      -v "${vol}:/source:ro" \
+      -v "${vol_dir}:/backup" \
+      alpine tar czf "/backup/${vol_archive}" -C /source .; then
+      ok "Volume backup: ${vol_archive}"
+    else
+      warn "Volume backup failed: ${vol}"
+    fi
+  done <<< "$volumes"
+
+  local archive_name="${dir_name}-backup-${timestamp}.tar.gz"
+  local archive_path="${PWD}/${archive_name}"
+
+  info "Creating archive: ${archive_name}"
+  tar czf "$archive_path" -C "$staging" "$dir_name"
+  rm -rf "$staging"
+
+  local size
+  size=$(stat --printf="%s" "$archive_path" 2>/dev/null || echo 0)
+  ok "Backup created: $(realpath "$archive_path") ($(numfmt --to=iec-i "$size" 2>/dev/null || echo "${size}B"))"
+}
+
+# ─── Dir Restore (simple mode) ────────────────────────────────
+cmd_dir_restore() {
+  local backup_file="$1"
+
+  if [[ -z "$backup_file" ]]; then
+    err "Usage: ct-volume dir-restore <backup-archive.tar.gz>"
+    exit 1
+  fi
+
+  if [[ ! -f "$backup_file" ]]; then
+    err "Backup file not found: $backup_file"
+    exit 1
+  fi
+
+  backup_file=$(realpath "$backup_file")
+  local archive_name
+  archive_name=$(basename "$backup_file")
+
+  info "Extracting archive: ${archive_name}"
+
+  # Extract to current directory
+  tar xzf "$backup_file" -C "$PWD"
+
+  # Get top-level directory from archive
+  local top_dir
+  top_dir=$(tar tzf "$backup_file" | head -1 | cut -d/ -f1 || true)
+
+  local project_dir="${PWD}/${top_dir}"
+  local vol_dir="${project_dir}/volumes"
+
+  if [[ ! -d "$vol_dir" ]]; then
+    err "No volumes directory found in archive (expected: ${top_dir}/volumes/)"
+    exit 1
+  fi
+
+  local restored=0
+  while IFS= read -r -d '' f; do
+    local vol_name
+    vol_name=$(basename "$f" .tar.gz)
+    info "Restoring volume: ${vol_name}"
+    docker volume inspect "$vol_name" &>/dev/null || docker volume create "$vol_name" &>/dev/null || true
+    if docker run --rm \
+      -v "${vol_name}:/dest" \
+      -v "${vol_dir}:/backup" \
+      alpine tar xzf "/backup/$(basename "$f")" -C /dest; then
+      ok "Volume restored: ${vol_name}"
+      restored=$((restored + 1))
+    else
+      warn "Volume restore failed: ${vol_name}"
+    fi
+  done < <(find "$vol_dir" -maxdepth 1 -name '*.tar.gz' -type f -print0)
+
+  ok "Restore finished. ${restored} volume(s) restored to ${project_dir}"
+  info "Run '${_COMPOSE_CMD} up -d' manually inside ${project_dir} when ready."
+}
+
 # ─── Main ──────────────────────────────────────────────────────
 main() {
   if [[ $# -eq 0 ]]; then
@@ -454,6 +601,7 @@ main() {
   local force=false
   local bundle=""
   local bundle_output=""
+  local dir_target=""
 
   # ─── Detect compose command (V2: docker compose, V1: docker-compose)
   if docker compose version &>/dev/null; then
@@ -465,7 +613,7 @@ main() {
   # Parse global args before command
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      backup|restore|list)
+      backup|restore|list|dir-backup|dir-restore)
         command="$1"
         shift
         break
@@ -551,8 +699,13 @@ main() {
         usage
         ;;
       *)
-        err "Unknown option: $1"
-        usage
+        if [[ "$command" == "dir-backup" || "$command" == "dir-restore" ]]; then
+          dir_target="$1"
+          shift
+        else
+          err "Unknown option: $1"
+          usage
+        fi
         ;;
     esac
   done
@@ -568,7 +721,7 @@ main() {
     exit 1
   fi
 
-  if [[ -z "$_COMPOSE_CMD" ]]; then
+  if [[ -z $_COMPOSE_CMD ]]; then
     err "Docker Compose not found (tried 'docker compose' and 'docker-compose')."
     exit 1
   fi
@@ -578,12 +731,14 @@ main() {
     if [[ -z "$compose_file" ]]; then
       info "Compose file will be resolved from bundle."
     fi
-  else
+  elif [[ "$command" != "dir-backup" && "$command" != "dir-restore" ]]; then
     compose_file=$(detect_compose_file "$compose_file")
     info "Using compose file: $(realpath "$compose_file")"
   fi
-  backup_dir=$(mkdir -p "$backup_dir" && cd "$backup_dir" && pwd)
-  info "Backup directory: ${backup_dir}"
+  if [[ "$command" != "dir-backup" && "$command" != "dir-restore" ]]; then
+    backup_dir=$(mkdir -p "$backup_dir" && cd "$backup_dir" && pwd)
+    info "Backup directory: ${backup_dir}"
+  fi
 
   case "$command" in
     backup)
@@ -594,6 +749,12 @@ main() {
       ;;
     list)
       cmd_list "$compose_file" "$filter_volume"
+      ;;
+    dir-backup)
+      cmd_dir_backup "$dir_target"
+      ;;
+    dir-restore)
+      cmd_dir_restore "$dir_target"
       ;;
   esac
 }
