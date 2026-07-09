@@ -121,6 +121,53 @@ get_named_volumes() {
   echo "$volumes"
 }
 
+# ─── Get volume key→name mapping ─────────────────────────────
+# Returns "key|name" pairs (compose key → actual docker volume name)
+# For V2: reads .value.name from docker compose config --format json
+# For V1: constructs project_key using project name from directory
+get_volume_mapping() {
+  local compose_file="$1"
+  local filter_volume="${2:-}"
+
+  local config
+  config=$($_COMPOSE_CMD -f "$compose_file" config --format json 2>/dev/null || true)
+
+  if [[ -n "$config" ]]; then
+    if ! command -v jq &>/dev/null; then
+      err "Required dependency 'jq' not found. Install it first."
+      exit 1
+    fi
+
+    if [[ -n "$filter_volume" ]]; then
+      echo "$config" | jq -r --arg v "$filter_volume" '
+        .volumes // {} | to_entries[] | select(.key == $v) | "\(.key)|\(.value.name)"
+      ' 2>/dev/null || true
+    else
+      echo "$config" | jq -r '
+        .volumes // {} | to_entries[] | select(.value.driver == "local" or .value.driver == null) | "\(.key)|\(.value.name)"
+      ' 2>/dev/null || true
+    fi
+  else
+    # V1 fallback: construct names using project directory prefix
+    local project
+    project=$(basename "$(dirname "$(realpath "$compose_file")")")
+    project="${project,,}"
+
+    local volumes
+    volumes=$($_COMPOSE_CMD -f "$compose_file" config --volumes 2>/dev/null || true)
+
+    if [[ -n "$filter_volume" ]]; then
+      volumes=$(echo "$volumes" | grep -x "$filter_volume" || true)
+    fi
+
+    echo "$volumes" | while read -r vol; do
+      if [[ -n "$vol" ]]; then
+        echo "${vol}|${project}_${vol}"
+      fi
+    done
+  fi
+}
+
 # ─── Get container status ──────────────────────────────────────
 compose_is_running() {
   local compose_file="$1"
@@ -223,7 +270,7 @@ cmd_backup() {
   local bundle_output="$6"
 
   local volumes
-  volumes=$(get_named_volumes "$compose_file" "$filter_volume")
+  volumes=$(get_volume_mapping "$compose_file" "$filter_volume")
 
   mkdir -p "$backup_dir"
 
@@ -240,16 +287,17 @@ cmd_backup() {
   local total_size=0
 
   echo ""
-  while read -r vol; do
-    local archive_name="${timestamp}-${vol}.tar.gz"
+  while IFS='|' read -r key name; do
+    [[ -z "$key" ]] && continue
+    local archive_name="${timestamp}-${key}.tar.gz"
     local archive_path="${backup_dir}/${archive_name}"
 
-    info "Backing up volume: ${vol} → ${archive_name}"
+    info "Backing up volume: ${name} → ${archive_name}"
 
-    docker volume inspect "$vol" &>/dev/null || docker volume create "$vol" &>/dev/null || true
+    docker volume inspect "$name" &>/dev/null || docker volume create "$name" &>/dev/null || true
 
     if docker run --rm \
-      -v "${vol}:/source:ro" \
+      -v "${name}:/source:ro" \
       -v "${backup_dir}:/backup" \
       alpine tar czf "/backup/${archive_name}" -C /source .; then
       local size
@@ -258,7 +306,7 @@ cmd_backup() {
       backup_files+=("$archive_path")
       ok "Backup complete: ${archive_name} ($(numfmt --to=iec-i "$size" 2>/dev/null || echo "${size}B"))"
     else
-      warn "Backup failed for volume: ${vol}"
+      warn "Backup failed for volume: ${key}"
     fi
   done <<< "$volumes"
 
@@ -369,6 +417,12 @@ cmd_restore() {
     exit 1
   fi
 
+  # Build volume name mapping (key → actual docker volume name)
+  declare -A vol_map
+  while IFS='|' read -r k n; do
+    [[ -n "$k" ]] && vol_map["$k"]="$n"
+  done < <(get_volume_mapping "$compose_file" "")
+
   # Determine which archives to restore
   local archives=()
   if [[ -n "$filter_volume" ]]; then
@@ -379,21 +433,17 @@ cmd_restore() {
       err "No backup found for volume '$filter_volume' in $backup_dir"
       exit 1
     fi
-    # Pick the latest backup for this volume
     archives=("${archives[-1]}")
   else
-    # Get list of volumes from compose and match with available backups
-    local volumes
-    volumes=$(get_named_volumes "$compose_file" "")
-    while read -r vol; do
+    for key in "${!vol_map[@]}"; do
       local latest
-      latest=$(find "$backup_dir" -maxdepth 1 -name "*-${vol}.tar.gz" -type f -print0 2>/dev/null | sort -z | tr '\0' '\n' | tail -1)
+      latest=$(find "$backup_dir" -maxdepth 1 -name "*-${key}.tar.gz" -type f -print0 2>/dev/null | sort -z | tr '\0' '\n' | tail -1)
       if [[ -n "$latest" ]]; then
         archives+=("$latest")
       else
-        warn "No backup found for volume: ${vol}"
+        warn "No backup found for volume: ${key}"
       fi
-    done <<< "$volumes"
+    done
 
     if [[ ${#archives[@]} -eq 0 ]]; then
       err "No matching backups found in $backup_dir"
@@ -422,11 +472,12 @@ cmd_restore() {
   for archive in "${archives[@]}"; do
     local archive_name
     archive_name=$(basename "$archive")
-    # Extract volume name: strip TIMESTAMP- prefix and .tar.gz suffix
-    local vol_name="${archive_name:16}"
-    vol_name="${vol_name%.tar.gz}"
+    # Extract compose key: strip TIMESTAMP- prefix and .tar.gz suffix
+    local key="${archive_name:16}"
+    key="${key%.tar.gz}"
+    # Lookup actual docker volume name
+    local vol_name="${vol_map[$key]:-$key}"
 
-    # Ensure volume exists (docker will create it implicitly with :delegated)
     docker volume inspect "$vol_name" &>/dev/null || docker volume create "$vol_name" &>/dev/null
 
     info "Restoring volume: ${vol_name} ← ${archive_name}"
@@ -487,7 +538,7 @@ cmd_dir_backup() {
   fi
 
   local volumes
-  volumes=$(get_named_volumes "$compose_file" "")
+  volumes=$(get_volume_mapping "$compose_file" "")
 
   local timestamp
   timestamp=$(date +%Y%m%d-%H%M%S)
@@ -505,17 +556,18 @@ cmd_dir_backup() {
   local vol_dir="${staging_dir}/volumes"
   mkdir -p "$vol_dir"
 
-  while read -r vol; do
-    local vol_archive="${vol}.tar.gz"
-    info "Backing up volume: ${vol}"
-    docker volume inspect "$vol" &>/dev/null || docker volume create "$vol" &>/dev/null || true
+  while IFS='|' read -r key name; do
+    [[ -z "$key" ]] && continue
+    local vol_archive="${name}.tar.gz"
+    info "Backing up volume: ${name}"
+    docker volume inspect "$name" &>/dev/null || docker volume create "$name" &>/dev/null || true
     if docker run --rm \
-      -v "${vol}:/source:ro" \
+      -v "${name}:/source:ro" \
       -v "${vol_dir}:/backup" \
       alpine tar czf "/backup/${vol_archive}" -C /source .; then
       ok "Volume backup: ${vol_archive}"
     else
-      warn "Volume backup failed: ${vol}"
+      warn "Volume backup failed: ${name}"
     fi
   done <<< "$volumes"
 
