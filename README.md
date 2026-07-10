@@ -1,13 +1,13 @@
-# ct-volume
+# ct-trans
 
-Docker Volume Backup/Restore Tool — backup dan restore volume Docker berdasarkan docker-compose / compose file dengan mudah.
+Container Transfer Tool — backup, restore, dan migrasi seluruh project Docker Compose (image + volume) antar server dengan mudah.
 
 ```
-ct-volume backup
-ct-volume restore
-ct-volume list
-ct-volume dir-backup /path/to/project
-ct-volume dir-restore backup.tar.gz
+ct-trans backup
+ct-trans restore
+ct-trans list
+ct-trans dir-backup /path/to/project
+ct-trans dir-restore backup.tar.gz
 ```
 
 ## Daftar Isi
@@ -19,6 +19,7 @@ ct-volume dir-restore backup.tar.gz
   - [Backup](#backup)
   - [Restore](#restore)
   - [List](#list)
+  - [Inspect](#inspect)
 - [Alur Kerja](#alur-kerja)
   - [Backup](#backup-1)
   - [Backup --bundle](#backup---bundle)
@@ -45,6 +46,8 @@ ct-volume dir-restore backup.tar.gz
 - **Multi compose support** — bisa pakai compose file dari direktori mana pun via `-f`
 - **Dir Backup** — backup satu direktori project + volume compose jadi satu archive
 - **Dir Restore** — restore archive ke current directory + restore semua volume
+- **Inspect** — lihat status dan ukuran volume Docker dari compose file
+- **Smart volume mapping** — restore otomatis mapping compose key → Docker volume name, aman migrasi antar server beda nama direktori
 
 ## Dependencies
 
@@ -85,10 +88,10 @@ brew install docker docker-compose jq
 ### Via clone (langsung pakai)
 
 ```bash
-git clone https://github.com/yourusername/ct-volume.git
-cd ct-volume
-chmod +x ct-volume
-./ct-volume --help
+git clone https://github.com/yourusername/ct-trans.git
+cd ct-trans
+chmod +x ct-trans
+./ct-trans --help
 ```
 
 ### Install ke system PATH (opsional)
@@ -96,14 +99,14 @@ chmod +x ct-volume
 Agar bisa dipanggil dari mana saja:
 
 ```bash
-sudo cp ct-volume /usr/local/bin/
+sudo cp ct-trans /usr/local/bin/
 # atau
-ln -s "$(pwd)/ct-volume" ~/.local/bin/
+ln -s "$(pwd)/ct-trans" ~/.local/bin/
 ```
 
 Verifikasi:
 ```bash
-ct-volume --version
+ct-trans --version
 ```
 
 ## Usage
@@ -114,7 +117,7 @@ ct-volume --version
 
 ```bash
 cd /project/dengan/compose/file
-ct-volume backup
+ct-trans backup
 ```
 
 Output:
@@ -135,7 +138,7 @@ Output:
 #### Backup volume spesifik
 
 ```bash
-ct-volume backup -v postgres_data
+ct-trans backup -v postgres_data
 ```
 
 #### Backup dengan custom backup directory
@@ -143,7 +146,7 @@ ct-volume backup -v postgres_data
 Direktori output backup dapat ditentukan dengan flag `-d` atau `--backup-dir`. Default: `./backups`.
 
 ```bash
-ct-volume backup \
+ct-trans backup \
   -f docker-compose.prod.yml \
   -d /mnt/backups/docker
 ```
@@ -153,7 +156,7 @@ ct-volume backup \
 Hanya menyisakan 7 backup terakhir per volume:
 
 ```bash
-ct-volume backup --retain 7
+ct-trans backup --retain 7
 ```
 
 #### Backup + bundle project (siap kirim antar server)
@@ -161,7 +164,7 @@ ct-volume backup --retain 7
 Backup volume, lalu zip seluruh direktori project (compose file + `.env` + config + backups) jadi satu archive:
 
 ```bash
-ct-volume backup --bundle
+ct-trans backup --bundle
 ```
 
 Output:
@@ -173,7 +176,7 @@ Output:
 Bundle output dapat diarahkan ke direktori tertentu dengan flag `-o` atau `--output`. Default: parent directory dari project.
 
 ```bash
-ct-volume backup --bundle -o /mnt/backups/bundles
+ct-trans backup --bundle -o /mnt/backups/bundles
 ```
 
 Nama file otomatis: `{nama-dir-project}-{YYYYMMDD}-{HHMMSS}.tar.gz`
@@ -183,7 +186,7 @@ Nama file otomatis: `{nama-dir-project}-{YYYYMMDD}-{HHMMSS}.tar.gz`
 #### Restore semua volume
 
 ```bash
-ct-volume restore
+ct-trans restore
 ```
 
 Akan muncul konfirmasi:
@@ -199,19 +202,19 @@ This will OVERWRITE existing volume data. Continue? [y/N]
 #### Restore tanpa konfirmasi
 
 ```bash
-ct-volume restore --force
+ct-trans restore --force
 ```
 
 #### Restore volume spesifik
 
 ```bash
-ct-volume restore -v postgres_data
+ct-trans restore -v postgres_data
 ```
 
 #### Restore dari direktori backup tertentu
 
 ```bash
-ct-volume restore -d /mnt/backups/docker
+ct-trans restore -d /mnt/backups/docker
 ```
 
 #### Restore dari bundle
@@ -219,7 +222,7 @@ ct-volume restore -d /mnt/backups/docker
 Ekstrak bundle + restore volume langsung dalam satu perintah:
 
 ```bash
-ct-volume restore --bundle my-web-app-20260626-221138.tar.gz
+ct-trans restore --bundle my-web-app-20260626-221138.tar.gz
 ```
 
 Cocok untuk migrasi antar server — cukup kirim 1 file `.tar.gz`, lalu restore.
@@ -229,7 +232,7 @@ Cocok untuk migrasi antar server — cukup kirim 1 file `.tar.gz`, lalu restore.
 Backup satu direktori project + seluruh volume docker-compose menjadi satu archive.
 
 ```bash
-ct-volume dir-backup /path/to/project
+ct-trans dir-backup /path/to/project
 ```
 
 Alur:
@@ -267,20 +270,28 @@ Restore archive (project + volume) ke current working directory.
 
 ```bash
 cd /target/location
-ct-volume dir-restore ../my-project-backup-20250709-120000.tar.gz
+ct-trans dir-restore ../my-project-backup-20250709-120000.tar.gz
 ```
 
 Alur:
 1. Ekstrak archive ke current directory
 2. Cari folder `volumes/` di dalam hasil extract
-3. Restore setiap volume docker dari file `.tar.gz` di `volumes/`
-4. Selesai — user jalankan `docker compose up -d` manual
+3. Deteksi compose file di project hasil extract
+4. Mapping tiap compose key ke Docker volume name yang benar untuk server target (via `docker compose config`)
+5. Restore setiap volume docker dari file `.tar.gz` di `volumes/` ke Docker volume name yang sesuai
+6. Selesai — user jalankan `docker compose up -d` manual
+
+> **Kenapa ini penting?** Docker Compose memberi prefix nama volume berdasarkan nama direktori project. Jika direktori berbeda antara server sumber dan tujuan (misal `myapp` → `myapp-clone`), Docker akan membuat volume baru dan data restore tidak terbaca. ct-trans otomatis memetakan compose key ke nama volume yang benar di server target.
 
 Output:
 ```
 ℹ Extracting archive: my-project-backup-20250709-120000.tar.gz
-ℹ Restoring volume: postgres_data
-✓ Volume restored: postgres_data
+ℹ Found volumes in: my-project/volumes/
+ℹ Resolving volume mapping from compose file: my-project/docker-compose.yml
+ℹ Restoring volume: new-server_myapp_postgres_data ← postgres_data.tar.gz
+✓ Volume restored: new-server_myapp_postgres_data
+ℹ Restoring volume: new-server_myapp_redis_data ← redis_data.tar.gz
+✓ Volume restored: new-server_myapp_redis_data
 ✓ Restore finished. 2 volume(s) restored to /target/location/my-project
 ℹ Run 'docker compose up -d' manually inside .../my-project when ready.
 ```
@@ -290,7 +301,7 @@ Output:
 #### List named volumes
 
 ```bash
-ct-volume list
+ct-trans list
 ```
 
 Output:
@@ -306,14 +317,43 @@ Named Volumes in: docker-compose.yml
 #### List volume spesifik
 
 ```bash
-ct-volume list -v postgres_data
+ct-trans list -v postgres_data
 ```
+
+### Inspect
+
+Lihat status dan ukuran volume Docker yang terdefinisi di compose file.
+
+#### Inspect semua volume
+
+```bash
+ct-trans inspect
+```
+
+Output:
+```
+ℹ Using compose file: /project/docker-compose.yml
+
+Volume                    Docker Name                               Status    Size
+──────────────────────────────────────────────────────────────────────────────────
+postgres_data             myapp_postgres_data                       exists    1.2G
+redis_data                myapp_redis_data                          exists    4.5K
+uploads                   myapp_uploads                             missing   -
+```
+
+#### Inspect volume spesifik
+
+```bash
+ct-trans inspect -v postgres_data
+```
+
+Berguna untuk mengecek apakah volume sudah siap sebelum `docker compose up -d`, terutama setelah migrasi antar server.
 
 ## Alur Kerja
 
 ### Backup
 ```
-ct-volume backup
+ct-trans backup
   │
   ├── Baca compose file → extract named volumes
   ├── Cek apakah ada container running
@@ -328,7 +368,7 @@ ct-volume backup
 
 ### Backup --bundle
 ```
-ct-volume backup --bundle
+ct-trans backup --bundle
   │
   ├── [proses backup normal]
   ├── Tentukan project root (parent dari compose file)
@@ -339,7 +379,7 @@ ct-volume backup --bundle
 
 ### Restore
 ```
-ct-volume restore
+ct-trans restore
   │
   ├── Cari archive backup terbaru untuk setiap volume
   ├── Tampilkan konfirmasi (kecuali --force)
@@ -352,7 +392,7 @@ ct-volume restore
 
 ### Restore --bundle
 ```
-ct-volume restore --bundle archive.tar.gz
+ct-trans restore --bundle archive.tar.gz
   │
   ├── Ekstrak archive → project dir
   ├── Deteksi compose file di dalam project dir
@@ -362,7 +402,7 @@ ct-volume restore --bundle archive.tar.gz
 
 ### Dir Backup
 ```
-ct-volume dir-backup /path/to/project
+ct-trans dir-backup /path/to/project
   │
   ├── Validasi direktori target
   ├── Cari docker-compose.yml di dalamnya
@@ -377,12 +417,14 @@ ct-volume dir-backup /path/to/project
 
 ### Dir Restore
 ```
-ct-volume dir-restore archive.tar.gz
+ct-trans dir-restore archive.tar.gz
   │
   ├── Ekstrak archive ke current directory
   ├── Cari folder volumes/ di hasil extract
+  ├── Deteksi compose file di project hasil extract
+  ├── Mapping compose key → Docker volume name untuk server target
   ├── Untuk setiap .tar.gz di volumes/:
-  │     └── docker run alpine tar xzf → restore ke docker volume
+  │     └── docker run alpine tar xzf → restore ke volume name yg benar
   └── Selesai (user compose up -d manual)
 ```
 
@@ -392,17 +434,17 @@ ct-volume dir-restore archive.tar.gz
 
 ```bash
 # 1. Cek volume apa saja yang ada
-ct-volume list -f docker-compose.prod.yml
+ct-trans list -f docker-compose.prod.yml
 
 # 2. Backup hanya volume postgres
-ct-volume backup \
+ct-trans backup \
   -f docker-compose.prod.yml \
   -v postgres_data \
   -d /backups/postgres \
   --retain 14
 
 # 3. Restore ke environment staging
-ct-volume restore \
+ct-trans restore \
   -f docker-compose.staging.yml \
   -v postgres_data \
   -d /backups/postgres \
@@ -416,7 +458,7 @@ Workflow lengkap pindah project beserta volume ke server lain menggunakan Tailsc
 ### Prasyarat
 
 - Kedua server terhubung dalam satu jaringan Tailscale
-- `ct-volume` sudah terinstall di kedua server
+- `ct-trans` sudah terinstall di kedua server (lihat [Instalasi](#instalasi))
 
 ### Step-by-step
 
@@ -427,7 +469,7 @@ Workflow lengkap pindah project beserta volume ke server lain menggunakan Tailsc
 cd /var/www/my-web-app
 
 # 2. Backup volume + bundle seluruh project
-ct-volume backup --bundle -o /tmp
+ct-trans backup --bundle -o /tmp
 # Output: /tmp/my-web-app-20260626-221138.tar.gz
 ```
 
@@ -447,7 +489,7 @@ rsync -avz --progress user@server-a:/tmp/my-web-app-*.tar.gz /tmp/
 ```bash
 # 3. Restore langsung dari bundle
 cd /tmp
-ct-volume restore --bundle my-web-app-20260626-221138.tar.gz --force
+ct-trans restore --bundle my-web-app-20260626-221138.tar.gz --force
 ```
 
 Selesai. Volume + compose file + config sudah ter-restore di Server B.
@@ -460,7 +502,7 @@ Selesai. Volume + compose file + config sudah ter-restore di Server B.
 # /etc/cron.daily/backup-webapp
 #!/bin/bash
 cd /var/www/my-web-app
-/usr/local/bin/ct-volume backup --bundle -o /tmp/backups --retain 7
+/usr/local/bin/ct-trans backup --bundle -o /tmp/backups --retain 7
 ```
 
 **Server B — pull backup via Tailscale:**
@@ -503,6 +545,20 @@ Gunakan `docker-compose` (V1) atau install plugin V2:
 ```bash
 sudo apt install docker-compose-v2
 ```
+
+### Volume tidak ter-restore setelah `docker compose up`
+
+Setelah restore dan `docker compose up`, container terasa seperti instalasi baru — biasanya karena **mismatch nama volume Docker**.
+
+**Penyebab:** Docker Compose memberi prefix nama volume berdasarkan nama direktori project. Jika direktori berbeda antara backup dan restore, volume data ter-restore di nama lama sementara compose mencari nama baru.
+
+**Solusi (otomatis):** Gunakan `ct-trans dir-restore` atau `ct-trans restore --bundle` — tool ini otomatis membaca compose file di project target dan memetakan compose key ke nama volume Docker yang benar untuk server tersebut.
+
+**Cek manual:**
+```bash
+ct-trans inspect
+```
+Pastikan semua volume berstatus `exists` sebelum menjalankan `docker compose up -d`.
 
 ### Backup file owner root
 File backup dibuat oleh user root di dalam container Docker. Ini normal karena proses backup berjalan sebagai root di container. File tetap bisa dibaca/dihapus oleh host user sesuai permission direktori backup.

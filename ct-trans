@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 BACKUP_DIR_DEFAULT="./backups"
 
 # ─── Compose command (auto-detected) ──────────────────────────
@@ -18,12 +18,13 @@ err()  { echo -e " ${RED}✗${NC} $1" >&2; }
 # ─── Usage ─────────────────────────────────────────────────────
 usage() {
   cat <<EOF
-Usage: ct-volume <command> [options]
+Usage: ct-trans <command> [options]
 
 Commands:
   backup       Backup named volumes from docker compose
   restore      Restore named volumes from backup archive
   list         List named volumes in the compose file
+  inspect      Inspect volume status and size
   dir-backup   Backup project directory + docker volumes into one archive
   dir-restore  Restore project directory + docker volumes from archive
 
@@ -44,16 +45,18 @@ Restore options:
   --bundle <file>         Restore from a bundle archive (extract + restore)
 
 Examples:
-  ct-volume backup
-  ct-volume backup -f docker-compose.prod.yml -d /mnt/backups --retain 7
-  ct-volume backup -v postgres_data
-  ct-volume backup --bundle -o /tmp
-  ct-volume restore
-  ct-volume restore -v postgres_data --force
-  ct-volume restore --bundle project-web-20250626.tar.gz
-  ct-volume list
-  ct-volume dir-backup /path/to/project
-  ct-volume dir-restore project-backup-20250709-120000.tar.gz
+  ct-trans backup
+  ct-trans backup -f docker-compose.prod.yml -d /mnt/backups --retain 7
+  ct-trans backup -v postgres_data
+  ct-trans backup --bundle -o /tmp
+  ct-trans restore
+  ct-trans restore -v postgres_data --force
+  ct-trans restore --bundle project-web-20250626.tar.gz
+  ct-trans list
+  ct-trans inspect
+  ct-trans inspect -v postgres_data
+  ct-trans dir-backup /path/to/project
+  ct-trans dir-restore project-backup-20250709-120000.tar.gz
 EOF
   exit 0
 }
@@ -351,7 +354,7 @@ retain_backups() {
     echo "$(date -r "$path" +%s) ${vol_name} ${path}"
   done | sort -k1,1n | while read -r ts vol_name path; do
     echo "$vol_name $path"
-  done > /tmp/ct-volume-backups.txt
+  done > /tmp/ct-trans-backups.txt
 
   # Process each unique volume
   local volumes_seen=""
@@ -359,10 +362,10 @@ retain_backups() {
     if ! echo "$volumes_seen" | grep -q "^${vol_name}$"; then
       volumes_seen="${volumes_seen}"$'\n'"${vol_name}"
       local count
-      count=$(grep -c "^${vol_name} " /tmp/ct-volume-backups.txt 2>/dev/null || echo 0)
+      count=$(grep -c "^${vol_name} " /tmp/ct-trans-backups.txt 2>/dev/null || echo 0)
       if [[ "$count" -gt "$retain" ]]; then
         local to_delete=$((count - retain))
-        grep "^${vol_name} " /tmp/ct-volume-backups.txt | head -n "$to_delete" | while read -r line; do
+        grep "^${vol_name} " /tmp/ct-trans-backups.txt | head -n "$to_delete" | while read -r line; do
           local old_path
           old_path=$(echo "$line" | awk '{print $2}')
           rm -f "$old_path"
@@ -370,9 +373,9 @@ retain_backups() {
         done
       fi
     fi
-  done < /tmp/ct-volume-backups.txt
+  done < /tmp/ct-trans-backups.txt
 
-  rm -f /tmp/ct-volume-backups.txt
+  rm -f /tmp/ct-trans-backups.txt
 }
 
 # ─── Restore ───────────────────────────────────────────────────
@@ -500,7 +503,7 @@ cmd_dir_backup() {
   local target_dir="$1"
 
   if [[ -z "$target_dir" ]]; then
-    err "Usage: ct-volume dir-backup <target-directory>"
+    err "Usage: ct-trans dir-backup <target-directory>"
     exit 1
   fi
 
@@ -558,7 +561,7 @@ cmd_dir_backup() {
 
   while IFS='|' read -r key name; do
     [[ -z "$key" ]] && continue
-    local vol_archive="${name}.tar.gz"
+    local vol_archive="${key}.tar.gz"
     info "Backing up volume: ${name}"
     docker volume inspect "$name" &>/dev/null || docker volume create "$name" &>/dev/null || true
     if docker run --rm \
@@ -588,7 +591,7 @@ cmd_dir_restore() {
   local backup_file="$1"
 
   if [[ -z "$backup_file" ]]; then
-    err "Usage: ct-volume dir-restore <backup-archive.tar.gz>"
+    err "Usage: ct-trans dir-restore <backup-archive.tar.gz>"
     exit 1
   fi
 
@@ -634,19 +637,50 @@ cmd_dir_restore() {
     exit 1
   fi
 
+  # Resolve expected Docker volume names from compose file in extracted project
+  local -A vol_map
+  local compose_file=""
+  for candidate in docker-compose.yml compose.yaml docker-compose.yaml compose.yml; do
+    if [[ -f "${project_dir}/${candidate}" ]]; then
+      compose_file="${project_dir}/${candidate}"
+      break
+    fi
+  done
+  if [[ -n "$compose_file" ]]; then
+    while IFS='|' read -r k n; do
+      [[ -n "$k" ]] && vol_map["$k"]="$n"
+    done < <(get_volume_mapping "$compose_file" "")
+  fi
+  # Build reverse map (docker_name → compose_key) for old-format archives
+  local -A rev_map
+  for k in "${!vol_map[@]}"; do
+    rev_map["${vol_map[$k]}"]="$k"
+  done
+
   local restored=0
   while IFS= read -r -d '' f; do
     local fname
     fname=$(basename "$f" .tar.gz)
-    # Handle both formats:
-    #   new:  {volname}.tar.gz              → volname
-    #   old:  {timestamp}-{volname}.tar.gz  → volname
-    local vol_name
+
+    # Determine compose key from archive filename
+    local compose_key=""
     if [[ "$fname" =~ ^[0-9]{8}-[0-9]{6}-(.+)$ ]]; then
-      vol_name="${BASH_REMATCH[1]}"
+      compose_key="${BASH_REMATCH[1]}"                          # TIMESTAMP-KEY format
+    elif [[ -n "${vol_map[$fname]:-}" ]]; then
+      compose_key="$fname"                                      # KEY format, found in mapping
+    elif [[ -n "${rev_map[$fname]:-}" ]]; then
+      compose_key="${rev_map[$fname]}"                          # DOCKER_VOLUME_NAME format
+    fi
+
+    # Resolve expected Docker volume name from mapping
+    local vol_name=""
+    if [[ -n "$compose_key" && -n "${vol_map[$compose_key]:-}" ]]; then
+      vol_name="${vol_map[$compose_key]}"
     else
       vol_name="$fname"
+      warn "Could not resolve volume mapping for '${fname}', using as-is"
     fi
+
     info "Restoring volume: ${vol_name} ← $(basename "$f")"
     docker volume inspect "$vol_name" &>/dev/null || docker volume create "$vol_name" &>/dev/null || true
     if docker run --rm \
@@ -662,6 +696,34 @@ cmd_dir_restore() {
 
   ok "Restore finished. ${restored} volume(s) restored to ${project_dir}"
   info "Run '${_COMPOSE_CMD} up -d' manually inside ${project_dir} when ready."
+}
+
+# ─── Inspect volumes ────────────────────────────────────────────
+cmd_inspect() {
+  local compose_file="$1"
+  local filter_volume="${2:-}"
+
+  local volumes
+  volumes=$(get_volume_mapping "$compose_file" "$filter_volume")
+
+  echo ""
+  printf "%-25s %-40s %-10s %s\n" "Volume" "Docker Name" "Status" "Size"
+  echo "──────────────────────────────────────────────────────────────────────────────────"
+
+  while IFS='|' read -r key name; do
+    [[ -z "$key" ]] && continue
+
+    local status="missing"
+    local size="-"
+
+    if docker volume inspect "$name" &>/dev/null; then
+      status="exists"
+      size=$(docker run --rm -v "${name}:/vol" alpine du -sh /vol 2>/dev/null | cut -f1 || echo "-")
+    fi
+
+    printf "%-25s %-40s %-10s %s\n" "$key" "$name" "$status" "$size"
+  done <<< "$volumes"
+  echo ""
 }
 
 # ─── Main ──────────────────────────────────────────────────────
@@ -690,7 +752,7 @@ main() {
   # Parse global args before command
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      backup|restore|list|dir-backup|dir-restore)
+      backup|restore|list|inspect|dir-backup|dir-restore)
         command="$1"
         shift
         break
@@ -699,7 +761,7 @@ main() {
         usage
         ;;
       --version)
-        echo "ct-volume v${VERSION}"
+        echo "ct-trans v${VERSION}"
         exit 0
         ;;
       *)
@@ -812,7 +874,7 @@ main() {
     compose_file=$(detect_compose_file "$compose_file")
     info "Using compose file: $(realpath "$compose_file")"
   fi
-  if [[ "$command" != "dir-backup" && "$command" != "dir-restore" ]]; then
+  if [[ "$command" != "dir-backup" && "$command" != "dir-restore" && "$command" != "list" && "$command" != "inspect" ]]; then
     backup_dir=$(mkdir -p "$backup_dir" && cd "$backup_dir" && pwd)
     info "Backup directory: ${backup_dir}"
   fi
@@ -826,6 +888,9 @@ main() {
       ;;
     list)
       cmd_list "$compose_file" "$filter_volume"
+      ;;
+    inspect)
+      cmd_inspect "$compose_file" "$filter_volume"
       ;;
     dir-backup)
       cmd_dir_backup "$dir_target"
