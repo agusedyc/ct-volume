@@ -89,11 +89,6 @@ get_named_volumes() {
   local volumes=""
   if [[ -n "$config" ]]; then
     # V2: --format json supported, parse with jq
-    if ! command -v jq &>/dev/null; then
-      err "Required dependency 'jq' not found. Install it first."
-      exit 1
-    fi
-
     if [[ -n "$filter_volume" ]]; then
       volumes=$(echo "$config" | jq -r --arg v "$filter_volume" '
         .volumes // {} | to_entries[] | select(.key == $v) | .key
@@ -136,11 +131,6 @@ get_volume_mapping() {
   config=$($_COMPOSE_CMD -f "$compose_file" config --format json 2>/dev/null || true)
 
   if [[ -n "$config" ]]; then
-    if ! command -v jq &>/dev/null; then
-      err "Required dependency 'jq' not found. Install it first."
-      exit 1
-    fi
-
     if [[ -n "$filter_volume" ]]; then
       echo "$config" | jq -r --arg v "$filter_volume" '
         .volumes // {} | to_entries[] | select(.key == $v) | "\(.key)|\(.value.name)"
@@ -516,14 +506,9 @@ cmd_dir_backup() {
   local dir_name
   dir_name=$(basename "$target_dir")
 
-  # Find compose file inside target directory
-  local compose_file=""
-  for candidate in docker-compose.yml compose.yaml docker-compose.yaml compose.yml; do
-    if [[ -f "${target_dir}/${candidate}" ]]; then
-      compose_file="${target_dir}/${candidate}"
-      break
-    fi
-  done
+  # Find compose file recursively inside target directory
+  local compose_file
+  compose_file=$(find "$target_dir" -type f \( -name "docker-compose.yml" -o -name "compose.yaml" -o -name "docker-compose.yaml" -o -name "compose.yml" \) -print -quit 2>/dev/null || true)
 
   if [[ -z "$compose_file" ]]; then
     err "No docker-compose.yml found in: $target_dir"
@@ -639,13 +624,8 @@ cmd_dir_restore() {
 
   # Resolve expected Docker volume names from compose file in extracted project
   local -A vol_map
-  local compose_file=""
-  for candidate in docker-compose.yml compose.yaml docker-compose.yaml compose.yml; do
-    if [[ -f "${project_dir}/${candidate}" ]]; then
-      compose_file="${project_dir}/${candidate}"
-      break
-    fi
-  done
+  local compose_file
+  compose_file=$(find "$project_dir" -type f \( -name "docker-compose.yml" -o -name "compose.yaml" -o -name "docker-compose.yaml" -o -name "compose.yml" \) -print -quit 2>/dev/null || true)
   if [[ -n "$compose_file" ]]; then
     while IFS='|' read -r k n; do
       [[ -n "$k" ]] && vol_map["$k"]="$n"
@@ -724,6 +704,61 @@ cmd_inspect() {
     printf "%-25s %-40s %-10s %s\n" "$key" "$name" "$status" "$size"
   done <<< "$volumes"
   echo ""
+}
+
+# ─── Ensure jq is available (auto-install if missing) ──────────
+ensure_jq() {
+  if command -v jq &>/dev/null; then
+    return 0
+  fi
+
+  warn "jq is required but not installed."
+
+  local pkg_manager=""
+  if command -v apt &>/dev/null; then
+    pkg_manager="apt"
+  elif command -v pacman &>/dev/null; then
+    pkg_manager="pacman"
+  elif command -v dnf &>/dev/null; then
+    pkg_manager="dnf"
+  elif command -v yum &>/dev/null; then
+    pkg_manager="yum"
+  elif command -v brew &>/dev/null; then
+    pkg_manager="brew"
+  elif command -v apk &>/dev/null; then
+    pkg_manager="apk"
+  fi
+
+  if [[ -z "$pkg_manager" ]]; then
+    err "No supported package manager found. Please install jq manually."
+    exit 1
+  fi
+
+  local install_cmd=""
+  case "$pkg_manager" in
+    apt)    install_cmd="sudo apt install -y jq" ;;
+    pacman) install_cmd="sudo pacman -S --noconfirm jq" ;;
+    dnf)    install_cmd="sudo dnf install -y jq" ;;
+    yum)    install_cmd="sudo yum install -y jq" ;;
+    brew)   install_cmd="brew install jq" ;;
+    apk)    install_cmd="sudo apk add jq" ;;
+  esac
+
+  echo ""
+  warn "Detected package manager: ${pkg_manager}"
+  info "Install command: ${install_cmd}"
+  read -rp "Install jq now? [y/N] " confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    err "jq is required. Please install it manually."
+    exit 1
+  fi
+
+  if eval "$install_cmd"; then
+    ok "jq installed successfully."
+  else
+    err "Failed to install jq. Please install it manually."
+    exit 1
+  fi
 }
 
 # ─── Main ──────────────────────────────────────────────────────
@@ -864,6 +899,8 @@ main() {
     err "Docker Compose not found (tried 'docker compose' and 'docker-compose')."
     exit 1
   fi
+
+  ensure_jq
 
   # Detect compose file (skip for backup/restore — compose is resolved internally)
   if [[ "$command" == "backup" || "$command" == "restore" ]]; then

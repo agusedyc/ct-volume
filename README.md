@@ -48,7 +48,7 @@ ct-trans inspect
 - **Specific volume** — backup/restore volume tertentu dengan flag `-v`
 - **Retention policy** — jaga jumlah backup per volume dengan `--retain N`
 - **Timestamped archive** — format nama file `YYYYMMDD-HHMMSS-volume-name.tar.gz`
-- **Minimal dependencies** — hanya butuh `bash`, `docker`, `docker compose`, `jq`
+- **Minimal dependencies** — hanya butuh `bash`, `docker`, `docker compose` (`jq` di-install otomatis jika belum ada)
 - **Multi compose support** — bisa pakai compose file dari direktori mana pun via `-f`
 - **Smart volume mapping** — restore otomatis mapping compose key → Docker volume name, aman migrasi antar server beda nama direktori
 
@@ -59,7 +59,7 @@ ct-trans inspect
 | `bash` ≥ 4.0 | Shell (built-in di semua Linux modern) |
 | `docker` | Docker Engine |
 | `docker compose` | Docker Compose V2 (plugin `docker compose`) |
-| `jq` | JSON processor untuk parsing compose config |
+| `jq` | JSON processor untuk parsing compose config (di-install otomatis jika belum ada) |
 | `alpine` | Image minimal untuk proses backup/restore (di-pull otomatis oleh Docker) |
 
 ### Install dependencies
@@ -85,6 +85,7 @@ brew install docker docker-compose jq
 ```
 
 > Pastikan Docker daemon sudah berjalan dan user Anda memiliki akses ke socket Docker (anggota grup `docker`).
+> `jq` tidak wajib di-install manual — ct-trans akan menginstallnya otomatis saat dibutuhkan.
 
 ## Instalasi
 
@@ -124,7 +125,7 @@ ct-trans backup /path/to/project
 
 Alur:
 1. Validasi direktori target
-2. Cari `docker-compose.yml` di dalamnya
+2. Cari `docker-compose.yml` secara recursive di dalamnya (termasuk sub-direktori)
 3. Cek container — jika masih berjalan, backup ditolak (harus `docker compose down` manual)
 4. Backup semua named volume ke folder `volumes/` (sementara)
 5. Archive seluruh file project + folder `volumes/` → `{nama-dir}-backup-{timestamp}.tar.gz`
@@ -361,7 +362,7 @@ Berguna untuk mengecek apakah volume sudah siap sebelum `docker compose up -d`, 
 ct-trans backup /path/to/project
   │
   ├── Validasi direktori target
-  ├── Cari docker-compose.yml di dalamnya
+  ├── Cari docker-compose.yml secara recursive (termasuk sub-direktori)
   ├── Cek container status
   │     ├── Running → warning, minta user stop manual
   │     └── Stopped → lanjut
@@ -540,9 +541,14 @@ Format nama: `{YYYYMMDD}-{HHMMSS}-{volume-name}.tar.gz`
 ## Troubleshooting
 
 ### `jq: command not found`
+Tidak perlu khawatir — `ct-trans` akan mendeteksi package manager (`apt`/`pacman`/`dnf`/`brew`/`apk`) dan menawarkan instalasi otomatis saat pertama kali dibutuhkan.
+
+Atau install manual:
 ```bash
 sudo apt install jq   # Debian/Ubuntu
 sudo pacman -S jq     # Arch
+sudo dnf install jq   # Fedora
+brew install jq       # macOS
 ```
 
 ### `docker compose` command not found
