@@ -21,12 +21,12 @@ usage() {
 Usage: ct-trans <command> [options]
 
 Commands:
-  backup       Backup named volumes from docker compose
-  restore      Restore named volumes from backup archive
+  backup       Backup project directory + docker volumes into one archive
+  restore      Restore project directory + docker volumes from archive
+  vol-backup   Backup named volumes from docker compose
+  vol-restore  Restore named volumes from backup archive
   list         List named volumes in the compose file
   inspect      Inspect volume status and size
-  dir-backup   Backup project directory + docker volumes into one archive
-  dir-restore  Restore project directory + docker volumes from archive
 
 Global options:
   -f, --file <file>       Compose file path (default: auto-detect)
@@ -35,28 +35,28 @@ Global options:
   -h, --help              Show this help message
   --version               Show version
 
-Backup options:
+Vol-Backup options:
   --retain <N>            Keep only last N backups per volume
   --bundle                Bundle project dir (compose + config + backups) into archive
   -o, --output <dir>      Bundle output directory (default: parent of compose project dir)
 
-Restore options:
+Vol-Restore options:
   --force                 Skip confirmation prompt
   --bundle <file>         Restore from a bundle archive (extract + restore)
 
 Examples:
-  ct-trans backup
-  ct-trans backup -f docker-compose.prod.yml -d /mnt/backups --retain 7
-  ct-trans backup -v postgres_data
-  ct-trans backup --bundle -o /tmp
-  ct-trans restore
-  ct-trans restore -v postgres_data --force
-  ct-trans restore --bundle project-web-20250626.tar.gz
+  ct-trans backup /path/to/project
+  ct-trans restore project-backup-20250709-120000.tar.gz
+  ct-trans vol-backup
+  ct-trans vol-backup -f docker-compose.prod.yml -d /mnt/backups --retain 7
+  ct-trans vol-backup -v postgres_data
+  ct-trans vol-backup --bundle -o /tmp
+  ct-trans vol-restore
+  ct-trans vol-restore -v postgres_data --force
+  ct-trans vol-restore --bundle project-web-20250626.tar.gz
   ct-trans list
   ct-trans inspect
   ct-trans inspect -v postgres_data
-  ct-trans dir-backup /path/to/project
-  ct-trans dir-restore project-backup-20250709-120000.tar.gz
 EOF
   exit 0
 }
@@ -503,7 +503,7 @@ cmd_dir_backup() {
   local target_dir="$1"
 
   if [[ -z "$target_dir" ]]; then
-    err "Usage: ct-trans dir-backup <target-directory>"
+    err "Usage: ct-trans backup <target-directory>"
     exit 1
   fi
 
@@ -591,7 +591,7 @@ cmd_dir_restore() {
   local backup_file="$1"
 
   if [[ -z "$backup_file" ]]; then
-    err "Usage: ct-trans dir-restore <backup-archive.tar.gz>"
+    err "Usage: ct-trans restore <backup-archive.tar.gz>"
     exit 1
   fi
 
@@ -752,7 +752,7 @@ main() {
   # Parse global args before command
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      backup|restore|list|inspect|dir-backup|dir-restore)
+      backup|restore|list|inspect|vol-backup|vol-restore)
         command="$1"
         shift
         break
@@ -811,10 +811,10 @@ main() {
         shift
         ;;
       --bundle)
-        if [[ "$command" == "backup" ]]; then
+        if [[ "$command" == "vol-backup" ]]; then
           bundle=true
           shift
-        elif [[ "$command" == "restore" ]]; then
+        elif [[ "$command" == "vol-restore" ]]; then
           bundle="$2"
           shift 2
         else
@@ -838,7 +838,7 @@ main() {
         usage
         ;;
       *)
-        if [[ "$command" == "dir-backup" || "$command" == "dir-restore" ]]; then
+        if [[ "$command" == "backup" || "$command" == "restore" ]]; then
           dir_target="$1"
           shift
         else
@@ -865,25 +865,32 @@ main() {
     exit 1
   fi
 
-  # Detect compose file (skip for restore --bundle, compose is inside bundle)
-  if [[ "$command" == "restore" && -n "$bundle" ]]; then
-    if [[ -z "$compose_file" ]]; then
-      info "Compose file will be resolved from bundle."
-    fi
-  elif [[ "$command" != "dir-backup" && "$command" != "dir-restore" ]]; then
+  # Detect compose file (skip for backup/restore — compose is resolved internally)
+  if [[ "$command" == "backup" || "$command" == "restore" ]]; then
+    :
+  elif [[ "$command" == "vol-restore" && -n "$bundle" && -z "$compose_file" ]]; then
+    info "Compose file will be resolved from bundle."
+  else
     compose_file=$(detect_compose_file "$compose_file")
     info "Using compose file: $(realpath "$compose_file")"
   fi
-  if [[ "$command" != "dir-backup" && "$command" != "dir-restore" && "$command" != "list" && "$command" != "inspect" ]]; then
+
+  if [[ "$command" == "vol-backup" || "$command" == "vol-restore" ]]; then
     backup_dir=$(mkdir -p "$backup_dir" && cd "$backup_dir" && pwd)
     info "Backup directory: ${backup_dir}"
   fi
 
   case "$command" in
     backup)
-      cmd_backup "$compose_file" "$backup_dir" "$filter_volume" "$retain" "$bundle" "$bundle_output"
+      cmd_dir_backup "$dir_target"
       ;;
     restore)
+      cmd_dir_restore "$dir_target"
+      ;;
+    vol-backup)
+      cmd_backup "$compose_file" "$backup_dir" "$filter_volume" "$retain" "$bundle" "$bundle_output"
+      ;;
+    vol-restore)
       cmd_restore "$compose_file" "$backup_dir" "$filter_volume" "$force" "$bundle"
       ;;
     list)
@@ -891,12 +898,6 @@ main() {
       ;;
     inspect)
       cmd_inspect "$compose_file" "$filter_volume"
-      ;;
-    dir-backup)
-      cmd_dir_backup "$dir_target"
-      ;;
-    dir-restore)
-      cmd_dir_restore "$dir_target"
       ;;
   esac
 }
