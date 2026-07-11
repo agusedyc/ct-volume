@@ -23,6 +23,7 @@ Usage: ct-trans <command> [options]
 Commands:
   backup       Backup project directory + docker volumes into one archive
   restore      Restore project directory + docker volumes from archive
+  cleanup      Remove all Docker resources (containers, volumes, images) for a project
   vol-backup   Backup named volumes from docker compose
   vol-restore  Restore named volumes from backup archive
   list         List named volumes in the compose file
@@ -60,6 +61,7 @@ Examples:
   ct-trans list
   ct-trans inspect
   ct-trans inspect -v postgres_data
+  ct-trans cleanup /path/to/project
 EOF
   exit 0
 }
@@ -491,6 +493,51 @@ cmd_restore() {
   ok "Restore finished."
 }
 
+# ─── Cleanup: remove all Docker resources ──────────────────────
+cmd_cleanup() {
+  local target_dir="$1"
+
+  if [[ -z "$target_dir" ]]; then
+    err "Usage: ct-trans cleanup <target-directory>"
+    exit 1
+  fi
+
+  if [[ ! -d "$target_dir" ]]; then
+    err "Target directory not found: $target_dir"
+    exit 1
+  fi
+
+  target_dir=$(realpath "$target_dir")
+
+  local compose_file
+  compose_file=$(find "$target_dir" -type f \( -name "docker-compose.yml" -o -name "compose.yaml" -o -name "docker-compose.yaml" -o -name "compose.yml" \) -print -quit 2>/dev/null || true)
+
+  if [[ -z "$compose_file" ]]; then
+    err "No docker-compose.yml found in: $target_dir"
+    exit 1
+  fi
+
+  echo ""
+  warn "You are about to COMPLETELY REMOVE all Docker resources for:"
+  echo "   ${target_dir}"
+  echo ""
+  echo "This will:"
+  echo "  - Stop and remove all containers"
+  echo "  - Remove all volumes (DATA will be LOST!)"
+  echo "  - Remove all images used by services"
+  echo "  - Remove orphan containers"
+  echo ""
+  read -r -p "Are you sure? [y/N] " reply
+  if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+    info "Cleanup cancelled."
+    exit 0
+  fi
+
+  info "Running: ${_COMPOSE_CMD} -f ${compose_file} down -v --rmi all --remove-orphans"
+  $_COMPOSE_CMD -f "$compose_file" down -v --rmi all --remove-orphans
+  ok "All Docker resources removed for: ${target_dir}"
+}
+
 # ─── Dir Backup (simple mode) ─────────────────────────────────
 cmd_dir_backup() {
   local target_dir="$1"
@@ -811,7 +858,7 @@ main() {
   # Parse global args before command
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      backup|restore|list|inspect|vol-backup|vol-restore)
+      backup|restore|cleanup|list|inspect|vol-backup|vol-restore)
         command="$1"
         shift
         break
@@ -906,7 +953,7 @@ main() {
         usage
         ;;
       *)
-        if [[ "$command" == "backup" || "$command" == "restore" ]]; then
+  if [[ "$command" == "backup" || "$command" == "restore" || "$command" == "cleanup" ]]; then
           dir_target="$1"
           shift
         else
@@ -936,7 +983,7 @@ main() {
   ensure_jq
 
   # Detect compose file (skip for backup/restore — compose is resolved internally)
-  if [[ "$command" == "backup" || "$command" == "restore" ]]; then
+        if [[ "$command" == "backup" || "$command" == "restore" || "$command" == "cleanup" ]]; then
     :
   elif [[ "$command" == "vol-restore" && -n "$bundle" && -z "$compose_file" ]]; then
     info "Compose file will be resolved from bundle."
@@ -956,6 +1003,9 @@ main() {
       ;;
     restore)
       cmd_dir_restore "$dir_target"
+      ;;
+    cleanup)
+      cmd_cleanup "$dir_target"
       ;;
     vol-backup)
       cmd_backup "$compose_file" "$backup_dir" "$filter_volume" "$retain" "$bundle" "$bundle_output"

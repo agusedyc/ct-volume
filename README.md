@@ -9,6 +9,7 @@ ct-trans vol-backup
 ct-trans vol-restore
 ct-trans list
 ct-trans inspect
+ct-trans cleanup /path/to/project
 ```
 
 ## Daftar Isi
@@ -44,6 +45,7 @@ ct-trans inspect
 - **Vol Restore** — restore volume dari archive backup, lengkap dengan konfirmasi
 - **List** — lihat daftar named volume yang terdefinisi di compose file
 - **Inspect** — lihat status dan ukuran volume Docker dari compose file
+- **Cleanup** — hapus seluruh resource Docker (container, volume, image) dari suatu project
 - **Auto stop/start** — otomatis stop service sebelum vol-backup/vol-restore, start ulang setelah selesai
 - **Specific volume** — backup/restore volume tertentu dengan flag `-v`
 - **Retention policy** — jaga jumlah backup per volume dengan `--retain N`
@@ -361,6 +363,31 @@ ct-trans inspect -v postgres_data
 
 Berguna untuk mengecek apakah volume sudah siap sebelum `docker compose up -d`, terutama setelah migrasi antar server.
 
+### Cleanup
+
+Hapus seluruh resource Docker (container, volume, image) dari suatu project compose.
+
+```bash
+ct-trans cleanup /path/to/project
+```
+
+Akan muncul peringatan dan konfirmasi sebelum eksekusi:
+
+```
+ℹ Using compose file: /path/to/project/docker-compose.yml
+
+⚠ You are about to COMPLETELY REMOVE all Docker resources for:
+   /path/to/project
+
+This will:
+  - Stop and remove all containers
+  - Remove all volumes (DATA will be LOST!)
+  - Remove all images used by services
+  - Remove orphan containers
+
+Are you sure? [y/N]
+```
+
 ## Alur Kerja
 
 ### Backup
@@ -438,6 +465,19 @@ ct-trans vol-restore --bundle archive.tar.gz
   ├── Deteksi compose file di dalam project dir
   ├── Set backup_dir ke ./backups/ di dalam project dir
   └── [proses restore normal]
+```
+
+### Cleanup
+```
+ct-trans cleanup /path/to/project
+  │
+  ├── Validasi direktori target
+  ├── Cari docker-compose.yml recursive
+  ├── Tampilkan peringatan data akan hilang
+  ├── Konfirmasi user
+  │     ├── Y → docker compose down -v --rmi all --remove-orphans
+  │     └── N → batal
+  └── Selesai
 ```
 
 ## Contoh Lengkap
