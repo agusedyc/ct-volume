@@ -690,7 +690,15 @@ cmd_dir_restore() {
   done < <(find "$vol_dir" -maxdepth 1 -name '*.tar.gz' -type f -print0)
 
   ok "Restore finished. ${restored} volume(s) restored to ${project_dir}"
-  info "Run '${_COMPOSE_CMD} up -d' manually inside ${project_dir} when ready."
+
+  echo ""
+  read -r -p "Run '${_COMPOSE_CMD} up -d' now? [y/N] " reply
+  if [[ "$reply" =~ ^[Yy]$ ]]; then
+    cd "$project_dir" && $_COMPOSE_CMD up -d
+    ok "Services started."
+  else
+    info "Run '${_COMPOSE_CMD} up -d' manually inside ${project_dir} when ready."
+  fi
 }
 
 # ─── Inspect volumes ────────────────────────────────────────────

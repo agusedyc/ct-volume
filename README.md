@@ -173,7 +173,7 @@ Alur:
 3. Deteksi compose file di project hasil extract
 4. Mapping tiap compose key ke Docker volume name yang benar untuk server target (via `docker compose config`)
 5. Restore setiap volume docker dari file `.tar.gz` di `volumes/` ke Docker volume name yang sesuai
-6. Selesai — user jalankan `docker compose up -d` manual
+6. Selesai — tawarkan `docker compose up -d` otomatis, atau manual
 
 > **Kenapa ini penting?** Docker Compose memberi prefix nama volume berdasarkan nama direktori project. Jika direktori berbeda antara server sumber dan tujuan (misal `myapp` → `myapp-clone`), Docker akan membuat volume baru dan data restore tidak terbaca. ct-trans otomatis memetakan compose key ke nama volume yang benar di server target.
 
@@ -388,7 +388,7 @@ ct-trans restore archive.tar.gz
   ├── Mapping compose key → Docker volume name untuk server target
   ├── Untuk setiap .tar.gz di volumes/:
   │     └── docker run alpine tar xzf → restore ke volume name yg benar
-  └── Selesai (user compose up -d manual)
+  └── Selesai — tawarkan "${_COMPOSE_CMD} up -d" langsung, atau manual
 ```
 
 ### Vol Backup
