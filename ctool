@@ -18,7 +18,7 @@ err()  { echo -e " ${RED}✗${NC} $1" >&2; }
 # ─── Usage ─────────────────────────────────────────────────────
 usage() {
   cat <<EOF
-Usage: ct-trans <command> [options]
+Usage: ctool <command> [options]
 
 Commands:
   backup       Backup project directory + docker volumes into one archive
@@ -49,19 +49,19 @@ Vol-Restore options:
   --bundle <file>         Restore from a bundle archive (extract + restore)
 
 Examples:
-  ct-trans backup /path/to/project
-  ct-trans restore project-backup-20250709-120000.tar.gz
-  ct-trans vol-backup
-  ct-trans vol-backup -f docker-compose.prod.yml -d /mnt/backups --retain 7
-  ct-trans vol-backup -v postgres_data
-  ct-trans vol-backup --bundle -o /tmp
-  ct-trans vol-restore
-  ct-trans vol-restore -v postgres_data --force
-  ct-trans vol-restore --bundle project-web-20250626.tar.gz
-  ct-trans list
-  ct-trans inspect
-  ct-trans inspect -v postgres_data
-  ct-trans cleanup /path/to/project
+  ctool backup /path/to/project
+  ctool restore project-backup-20250709-120000.tar.gz
+  ctool vol-backup
+  ctool vol-backup -f docker-compose.prod.yml -d /mnt/backups --retain 7
+  ctool vol-backup -v postgres_data
+  ctool vol-backup --bundle -o /tmp
+  ctool vol-restore
+  ctool vol-restore -v postgres_data --force
+  ctool vol-restore --bundle project-web-20250626.tar.gz
+  ctool list
+  ctool inspect
+  ctool inspect -v postgres_data
+  ctool cleanup /path/to/project
 EOF
   exit 0
 }
@@ -349,7 +349,7 @@ retain_backups() {
     echo "$(date -r "$path" +%s) ${vol_name} ${path}"
   done | sort -k1,1n | while read -r ts vol_name path; do
     echo "$vol_name $path"
-  done > /tmp/ct-trans-backups.txt
+  done > /tmp/ctool-backups.txt
 
   # Process each unique volume
   local volumes_seen=""
@@ -357,10 +357,10 @@ retain_backups() {
     if ! echo "$volumes_seen" | grep -q "^${vol_name}$"; then
       volumes_seen="${volumes_seen}"$'\n'"${vol_name}"
       local count
-      count=$(grep -c "^${vol_name} " /tmp/ct-trans-backups.txt 2>/dev/null || echo 0)
+      count=$(grep -c "^${vol_name} " /tmp/ctool-backups.txt 2>/dev/null || echo 0)
       if [[ "$count" -gt "$retain" ]]; then
         local to_delete=$((count - retain))
-        grep "^${vol_name} " /tmp/ct-trans-backups.txt | head -n "$to_delete" | while read -r line; do
+        grep "^${vol_name} " /tmp/ctool-backups.txt | head -n "$to_delete" | while read -r line; do
           local old_path
           old_path=$(echo "$line" | awk '{print $2}')
           rm -f "$old_path"
@@ -368,9 +368,9 @@ retain_backups() {
         done
       fi
     fi
-  done < /tmp/ct-trans-backups.txt
+  done < /tmp/ctool-backups.txt
 
-  rm -f /tmp/ct-trans-backups.txt
+  rm -f /tmp/ctool-backups.txt
 }
 
 # ─── Restore ───────────────────────────────────────────────────
@@ -498,7 +498,7 @@ cmd_cleanup() {
   local target_dir="$1"
 
   if [[ -z "$target_dir" ]]; then
-    err "Usage: ct-trans cleanup <target-directory>"
+    err "Usage: ctool cleanup <target-directory>"
     exit 1
   fi
 
@@ -544,7 +544,7 @@ cmd_dir_backup() {
   local auto_restart="${2:-false}"
 
   if [[ -z "$target_dir" ]]; then
-    err "Usage: ct-trans backup <target-directory>"
+    err "Usage: ctool backup <target-directory>"
     exit 1
   fi
 
@@ -638,7 +638,7 @@ cmd_dir_restore() {
   local backup_file="$1"
 
   if [[ -z "$backup_file" ]]; then
-    err "Usage: ct-trans restore <backup-archive.tar.gz>"
+    err "Usage: ctool restore <backup-archive.tar.gz>"
     exit 1
   fi
 
@@ -867,7 +867,7 @@ main() {
         usage
         ;;
       --version)
-        echo "ct-trans v${VERSION}"
+        echo "ctool v${VERSION}"
         exit 0
         ;;
       *)
