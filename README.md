@@ -123,10 +123,16 @@ Backup satu direktori project + seluruh volume docker-compose menjadi satu archi
 ct-trans backup /path/to/project
 ```
 
+Jika container masih berjalan, akan muncul konfirmasi untuk stop otomatis. Gunakan `--restart` untuk menyalakan ulang services setelah backup selesai:
+
+```bash
+ct-trans backup /path/to/project --restart
+```
+
 Alur:
 1. Validasi direktori target
 2. Cari `docker-compose.yml` secara recursive di dalamnya (termasuk sub-direktori)
-3. Cek container — jika masih berjalan, backup ditolak (harus `docker compose down` manual)
+3. Cek container — jika masih berjalan, konfirmasi auto-stop (atau batal jika tidak setuju)
 4. Backup semua named volume ke folder `volumes/` (sementara)
 5. Archive seluruh file project + folder `volumes/` → `{nama-dir}-backup-{timestamp}.tar.gz`
 6. Hasil disimpan di current working directory
@@ -363,9 +369,9 @@ ct-trans backup /path/to/project
   │
   ├── Validasi direktori target
   ├── Cari docker-compose.yml secara recursive (termasuk sub-direktori)
-  ├── Cek container status
-  │     ├── Running → warning, minta user stop manual
-  │     └── Stopped → lanjut
+├── Cek container status
+│     ├── Running → konfirmasi auto-stop (Y → down, N → batal)
+│     └── Stopped → lanjut
   ├── Copy semua file project ke staging area
   ├── Backup named volumes ke staging/volumes/
   ├── Archive staging + compress → {nama}-backup-{timestamp}.tar.gz

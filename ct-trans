@@ -40,6 +40,9 @@ Vol-Backup options:
   --bundle                Bundle project dir (compose + config + backups) into archive
   -o, --output <dir>      Bundle output directory (default: parent of compose project dir)
 
+Dir-Backup options:
+  --restart               Restart services after backup (default: stay stopped)
+
 Vol-Restore options:
   --force                 Skip confirmation prompt
   --bundle <file>         Restore from a bundle archive (extract + restore)
@@ -491,6 +494,7 @@ cmd_restore() {
 # ─── Dir Backup (simple mode) ─────────────────────────────────
 cmd_dir_backup() {
   local target_dir="$1"
+  local auto_restart="${2:-false}"
 
   if [[ -z "$target_dir" ]]; then
     err "Usage: ct-trans backup <target-directory>"
@@ -517,12 +521,19 @@ cmd_dir_backup() {
 
   info "Using compose file: $compose_file"
 
-  # Check container status — user must stop manually
+  # Check container status — ask user to stop or abort
+  local was_stopped=false
   if compose_is_running "$compose_file"; then
     warn "Container is still running in: $target_dir"
-    warn "Please stop it first, then run backup again."
-    info "Inside $target_dir, run: ${_COMPOSE_CMD} down"
-    exit 1
+    echo ""
+    read -r -p "Stop services first? [y/N] " reply
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+      compose_down "$compose_file"
+      was_stopped=true
+    else
+      err "Aborted by user."
+      exit 1
+    fi
   fi
 
   local volumes
@@ -565,6 +576,10 @@ cmd_dir_backup() {
   info "Creating archive: ${archive_name}"
   tar czf "$archive_path" -C "$staging" "$dir_name"
   rm -rf "$staging"
+
+  if [[ "$auto_restart" == "true" && "$was_stopped" == "true" ]]; then
+    compose_up "$compose_file"
+  fi
 
   local size
   size=$(stat --printf="%s" "$archive_path" 2>/dev/null || echo 0)
@@ -773,6 +788,7 @@ main() {
   local filter_volume=""
   local retain=0
   local force=false
+  local auto_restart=false
   local bundle=""
   local bundle_output=""
   local dir_target=""
@@ -844,6 +860,15 @@ main() {
       --force)
         force=true
         shift
+        ;;
+      --restart)
+        if [[ "$command" == "backup" ]]; then
+          auto_restart=true
+          shift
+        else
+          err "--restart not supported for '$command'"
+          exit 1
+        fi
         ;;
       --bundle)
         if [[ "$command" == "vol-backup" ]]; then
@@ -919,7 +944,7 @@ main() {
 
   case "$command" in
     backup)
-      cmd_dir_backup "$dir_target"
+      cmd_dir_backup "$dir_target" "$auto_restart"
       ;;
     restore)
       cmd_dir_restore "$dir_target"
